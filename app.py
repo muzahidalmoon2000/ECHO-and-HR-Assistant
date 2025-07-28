@@ -316,7 +316,7 @@ def chat():
         gpt_result = detect_intent_and_extract(user_input)
         intent = gpt_result.get("intent", "").lower()
         query = gpt_result.get("data", "").strip()
-
+        logging.info(f"Detected intent: {intent}, query: {query}")
         # ✅ HR assistant takes priority
         hr_response = handle_query(user_input)
         if hr_response and not hr_response.startswith("Knowledge base not found"):
@@ -325,6 +325,7 @@ def chat():
 
         # ✅ File search
         if intent == "file_search" and query and len(query) >= 2:
+            print("Detected intent:", intent, "with query:", query)
             session["last_query"] = query
             top_files = search_all_files(token, query)
 

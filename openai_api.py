@@ -9,26 +9,27 @@ client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 def detect_intent_and_extract(user_input):
     """
-    Detect user intent and extract a clean query for file search if applicable.
-    Uses both keyword detection and GPT fallback for better accuracy.
+    Detect user intent and extract a clean query using GPT-4o.
+    Falls back to rule-based detection only if GPT fails.
     """
+    try:
+        result = detect_intent_and_extract_gpt(user_input)
+        if result and result.get("intent"):
+            return result
+    except Exception as e:
+        print("❌ GPT intent fallback error:", e)
+
+    # 🔁 Fallback: basic rule-based detection (very minimal)
     input_lower = user_input.strip().lower()
-    file_keywords = [
-        "file", "document", "doc", "pdf", "folder", "record",
-        "report", "sheet", "policy", "guide", "manual", "plan", "info"
-    ]
+    file_keywords = ["file", "document", "report", "sheet", "policy"]
+    for kw in file_keywords:
+        if kw in input_lower:
+            return {
+                "intent": "file_search",
+                "data": input_lower.replace(kw, "").strip()
+            }
 
-    # ✅ Rule-based shortcut for file-related queries
-    if any(kw in input_lower for kw in file_keywords) and ("file" in input_lower or "document" in input_lower):
-        probable_query = re.sub(r".*(?:give|get|show|find|download|share)\s+(?:me\s+)?(?:the\s+)?", "", input_lower)
-        probable_query = re.sub(r"\s+(file|document|folder|info|report)?$", "", probable_query)
-        return {
-            "intent": "file_search",
-            "data": probable_query.strip()
-        }
-
-    # ✅ Fallback to GPT for broader understanding
-    return detect_intent_and_extract_gpt(user_input)
+    return {"intent": "general_response", "data": ""}
 
 
 
