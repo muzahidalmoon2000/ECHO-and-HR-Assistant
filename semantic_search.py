@@ -1,27 +1,55 @@
+from openai import OpenAI
+import numpy as np
+import os
+from dotenv import load_dotenv
 
-from sentence_transformers import SentenceTransformer, util
+load_dotenv()
+client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
-# Load model once
-model = SentenceTransformer('all-MiniLM-L6-v2')
+def cosine_similarity(vec1, vec2):
+    a = np.array(vec1)
+    b = np.array(vec2)
+    return np.dot(a, b) / (np.linalg.norm(a) * np.linalg.norm(b))
 
 def rank_files_by_similarity(query, files, top_k=None):
     if not files:
+        print("⚠️ No files to rank.")
         return []
 
-    file_names = [f['name'] for f in files]
-    query_embedding = model.encode(query, convert_to_tensor=True)
-    name_embeddings = model.encode(file_names, convert_to_tensor=True)
+    # Extract the best available content for each file (prefer full extracted text over just name)
+    content_inputs = []
+    filtered_files = []
 
-    similarities = util.pytorch_cos_sim(query_embedding, name_embeddings)[0]
-    ranked_indices = similarities.argsort(descending=True)
+    for f in files:
+        text = f.get("extracted_text") or f.get("name")
+        if not text or len(text.strip()) < 5:
+            print(f"⚠️ Skipping {f.get('name', '[unnamed]')} — no usable text.")
+            continue
+        content_inputs.append(text[:2000])  # Truncate if needed
+        filtered_files.append(f)
 
-    if top_k is None:
-        top_k = len(files)
+    if not filtered_files:
+        print("⚠️ No valid files with extractable content.")
+        return []
 
-    top_matches = []
-    for idx in ranked_indices[:top_k]:
-        file = files[int(idx)]
-        file['similarity_score'] = float(similarities[idx])
-        top_matches.append(file)
+    try:
+        query_embedding = client.embeddings.create(
+            input=[query],
+            model="text-embedding-3-small"
+        ).data[0].embedding
 
-    return top_matches
+        content_embeddings = client.embeddings.create(
+            input=content_inputs,
+            model="text-embedding-3-small"
+        ).data
+
+    except Exception as e:
+        print(f"❌ Embedding error: {e}")
+        return filtered_files  # Return unranked
+
+    # Score and assign similarity
+    for file, emb in zip(filtered_files, content_embeddings):
+        file['similarity_score'] = cosine_similarity(query_embedding, emb.embedding)
+
+    ranked = sorted(filtered_files, key=lambda x: x['similarity_score'], reverse=True)
+    return ranked[:top_k] if top_k else ranked

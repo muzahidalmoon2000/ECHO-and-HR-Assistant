@@ -2,8 +2,10 @@ import requests
 import os
 import time
 import logging
-from semantic_search import rank_files_by_similarity
+import re
+from semantic_search import rank_files_by_similarity, cosine_similarity
 from msal_auth import load_token_cache, save_token_cache, build_msal_app
+from extractor import extract_text_from_scanned_pdf, extract_text_from_pdf, extract_text_from_image
 
 logging.basicConfig(level=logging.INFO)
 
@@ -40,6 +42,16 @@ def retry_request(url, headers, method="get", json=None, max_retries=2, account_
     logging.error(f"Max retries exceeded for {url}")
     return res
 
+def get_file_with_download_url(drive_id, item_id, token):
+    headers = {"Authorization": f"Bearer {token}"}
+    url = f"https://graph.microsoft.com/v1.0/drives/{drive_id}/items/{item_id}"
+    res = requests.get(url, headers=headers)
+    if res.status_code == 200:
+        return res.json()
+    else:
+        logging.warning(f"⚠️ Failed to fetch full metadata for item {item_id}")
+        return None
+
 def get_user_email(account_id):
     token = refresh_token(account_id)
     if not token:
@@ -67,14 +79,35 @@ def discover_all_sites(token):
 def search_all_files(token, query):
     headers = {"Authorization": f"Bearer {token}"}
     all_results = []
+    seen_ids = set()
 
-    # Personal OneDrive
-    me_url = f"https://graph.microsoft.com/v1.0/me/drive/root/search(q='{query}')"
-    me_res = retry_request(me_url, headers)
-    if me_res.status_code == 200:
-        all_results += tag_site_id(me_res.json().get("value", []), "personal")
+    year_match = re.search(r'\b(19|20)\d{2}\b', query)
+    year = year_match.group() if year_match else None
+    words = query.split()
+    if year:
+        words.remove(year)
+    core = " ".join(words).lower()
 
-    # Discover all SharePoint sites dynamically
+    query_batch = list(dict.fromkeys([
+        core,
+        words[0] if len(words) > 0 else "",
+        " ".join(words[1:]) if len(words) > 1 else "",
+        words[1] if len(words) > 1 else "",
+        words[2] if len(words) > 2 else ""
+    ]))
+    query_batch = [q for q in query_batch if q]
+
+    for q in query_batch:
+        me_url = f"https://graph.microsoft.com/v1.0/me/drive/root/search(q='{q}')"
+        me_res = retry_request(me_url, headers)
+        if me_res.status_code == 200:
+            for item in me_res.json().get("value", []):
+                if item["id"] not in seen_ids:
+                    seen_ids.add(item["id"])
+                    meta = get_file_with_download_url(item["parentReference"]["driveId"], item["id"], token)
+                    if meta:
+                        all_results.append(meta)
+
     sites = discover_all_sites(token)
     for site in sites:
         site_id = site.get("id")
@@ -84,24 +117,46 @@ def search_all_files(token, query):
         drives_res = retry_request(drives_url, headers)
         if drives_res.status_code != 200:
             continue
-
         for drive in drives_res.json().get("value", []):
-            search_url = f"https://graph.microsoft.com/v1.0/drives/{drive['id']}/search(q='{query}')"
-            search_res = retry_request(search_url, headers)
-            if search_res.status_code == 200:
-                all_results += tag_site_id(search_res.json().get("value", []), site_id)
+            for q in query_batch:
+                search_url = f"https://graph.microsoft.com/v1.0/drives/{drive['id']}/search(q='{q}')"
+                search_res = retry_request(search_url, headers)
+                if search_res.status_code == 200:
+                    for item in search_res.json().get("value", []):
+                        if item["id"] not in seen_ids:
+                            seen_ids.add(item["id"])
+                            meta = get_file_with_download_url(item["parentReference"]["driveId"], item["id"], token)
+                            if meta:
+                                all_results.append(tag_site_id([meta], site_id)[0])
 
     if not all_results:
-        logging.info("No results found via search. Fetching recent files as fallback.")
+        logging.info("No results from batch search. Using recent files.")
         all_results = fetch_recent_files(token)
 
-    # ✅ Exclude folders
-    file_only_results = [item for item in all_results if "folder" not in item]
+    files = [f for f in all_results if "folder" not in f]
 
-    ranked = rank_files_by_similarity(query, file_only_results, top_k=None)
-    logging.info(f"🔍 Ranked {len(ranked)} files matching '{query}'")
-    return ranked
+    def process_file(file):
+        download_url = file.get('@microsoft.graph.downloadUrl')
+        if not download_url:
+            logging.warning(f"⚠️ Skipping {file.get('name')}: no download URL.")
+            return ""
+        mime = file.get("file", {}).get("mimeType", "")
+        image_types = ["image/png", "image/jpeg", "image/jpg", "image/gif", "image/bmp"]
+        if mime in image_types:
+            return extract_text_from_image(download_url)
+        elif 'pdf' in mime:
+            text = extract_text_from_pdf(download_url)
+            return text if text.strip() else extract_text_from_scanned_pdf(download_url)
+        return ""
 
+    for file in files:
+        text = process_file(file)
+        if text:
+            file['extracted_text'] = text
+
+    # Use semantic search to rank files based on extracted_text
+    ranked_files = rank_files_by_similarity(core, files)
+    return ranked_files
 
 def fetch_recent_files(token):
     headers = {"Authorization": f"Bearer {token}"}
@@ -120,7 +175,6 @@ def tag_site_id(items, site_id):
 def check_file_access(token, item_id, user_email, site_id=None):
     if os.getenv("PERFORM_ACCESS_CHECK", "false").lower() != "true":
         return True
-
     headers = {"Authorization": f"Bearer {token}"}
     if site_id and site_id != "personal":
         url = f"https://graph.microsoft.com/v1.0/sites/{site_id}/drive/items/{item_id}/permissions"

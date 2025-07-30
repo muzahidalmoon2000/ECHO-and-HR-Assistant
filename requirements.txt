@@ -16,3 +16,6 @@ PyMuPDF
 docx2txt
 unstructured
 pydantic
+pytesseract
+pdf2image
+easyocr
