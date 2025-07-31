@@ -1,4 +1,6 @@
 import os
+import os
+os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 import time
 import json
 import logging
@@ -29,6 +31,7 @@ from db import (
 )
 from hr_router import handle_query
 from knowledge_base.build_index import build_index
+
 
 # 🌱 Load env and init logging
 load_dotenv()

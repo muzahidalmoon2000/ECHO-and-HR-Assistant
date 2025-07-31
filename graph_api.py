@@ -3,7 +3,7 @@ import os
 import time
 import logging
 import re
-from semantic_search import rank_files_by_similarity, cosine_similarity
+from semantic_search import rank_files_by_similarity, build_faiss_index
 from msal_auth import load_token_cache, save_token_cache, build_msal_app
 from extractor import extract_text_from_scanned_pdf, extract_text_from_pdf, extract_text_from_image
 
@@ -83,19 +83,13 @@ def search_all_files(token, query):
 
     year_match = re.search(r'\b(19|20)\d{2}\b', query)
     year = year_match.group() if year_match else None
+
     words = query.split()
     if year:
         words.remove(year)
-    core = " ".join(words).lower()
 
-    query_batch = list(dict.fromkeys([
-        core,
-        words[0] if len(words) > 0 else "",
-        " ".join(words[1:]) if len(words) > 1 else "",
-        words[1] if len(words) > 1 else "",
-        words[2] if len(words) > 2 else ""
-    ]))
-    query_batch = [q for q in query_batch if q]
+    core = " ".join(words).strip().lower()
+    query_batch = [core]
 
     for q in query_batch:
         me_url = f"https://graph.microsoft.com/v1.0/me/drive/root/search(q='{q}')"
@@ -154,8 +148,11 @@ def search_all_files(token, query):
         if text:
             file['extracted_text'] = text
 
-    # Use semantic search to rank files based on extracted_text
-    ranked_files = rank_files_by_similarity(core, files)
+    # Build FAISS index only for file searching
+    build_faiss_index(files, index_name="file")
+
+    # Use FAISS for semantic ranking
+    ranked_files = rank_files_by_similarity(query, top_k=None, index_name="file")
     return ranked_files
 
 def fetch_recent_files(token):
