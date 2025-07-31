@@ -1,26 +1,25 @@
-
-import easyocr
+import pytesseract
 import numpy as np
 import fitz  # PyMuPDF
 from PIL import Image
 from io import BytesIO
 import requests
 
-reader = easyocr.Reader(['en'])  # Initialize once
+print(pytesseract.get_tesseract_version())
 
-# OCR for images using EasyOCR
+# OCR for images using Tesseract
 def extract_text_from_image(image_url):
     try:
         response = requests.get(image_url)
-        img = Image.open(BytesIO(response.content)).convert("RGB")
-        img_np = np.array(img)  # Convert to NumPy array
-        results = reader.readtext(img_np, detail=0)
-        return "\n".join(results)
+        img = Image.open(BytesIO(response.content)).convert("L")  # grayscale
+        img = img.resize((img.width * 2, img.height * 2))  # upscale for better OCR
+        text = pytesseract.image_to_string(img)
+        return text.strip()
     except Exception as e:
-        print(f"❌ EasyOCR failed: {e}")
+        print(f"❌ Tesseract OCR failed: {e}")
         return ""
 
-# Extract text from PDF using OCR (fallback for scanned documents)
+# Extract text from scanned PDFs using Tesseract OCR
 def extract_text_from_scanned_pdf(pdf_url):
     try:
         response = requests.get(pdf_url)
@@ -33,15 +32,12 @@ def extract_text_from_scanned_pdf(pdf_url):
         for page_num in range(pdf_file.page_count):
             page = pdf_file.load_page(page_num)
             pix = page.get_pixmap()
-            img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
-            img_bytes = BytesIO()
-            img.save(img_bytes, format="PNG")
-            img_bytes.seek(0)
-            ocr_result = reader.readtext(img_bytes, detail=0)
-            text += "\n".join(ocr_result) + "\n"
+            img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples).convert("L")
+            img = img.resize((img.width * 2, img.height * 2))
+            text += pytesseract.image_to_string(img) + "\n"
         return text.strip()
     except Exception as e:
-        print(f"❌ EasyOCR PDF fallback failed: {e}")
+        print(f"❌ Tesseract PDF OCR failed: {e}")
         return ""
 
 # Text extraction from PDFs (non-scanned)
